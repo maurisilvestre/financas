@@ -1,0 +1,11 @@
+.env
+.env.*
+backups
+secrets
+**/node_modules
+**/*.key
+**/*.dump
+**/*.dump.age
+.git
+.DS_Store
+web/dist

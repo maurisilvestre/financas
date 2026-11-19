@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+backups/
+secrets/
+node_modules/
+*.key
+*.dump
+*.dump.age
+.DS_Store
+web/dist/
+
+# Pessoal: contexto da casa e do servidor (nunca vão para o repositório)
+CLAUDE.local.md
+contexto-mcp.md
+migrar-dados.sh

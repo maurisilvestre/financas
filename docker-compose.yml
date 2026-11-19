@@ -1,0 +1,156 @@
+# Finanças: banco + sync com o Meu Pluggy + backup + MCP + app web (http://127.0.0.1:8737).
+#   docker compose up -d --build     sobe tudo (migrations rodam antes do sync; o MCP não sobe aqui)
+#   docker compose logs -f sync      acompanha os syncs
+#   docker compose run --rm sync check | sync | sync --full | status
+name: financas
+
+x-sync-image: &sync-image
+  image: financas/sync:local
+  build:
+    context: .
+    dockerfile: sync/Dockerfile
+
+x-app-db: &app-db
+  PGHOST: db
+  PGPORT: "5432"
+  PGDATABASE: financas
+  PGUSER: fin_app
+  PGPASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+  TZ: America/Sao_Paulo
+
+# Camada do usuário (MCP e app web): lê com fin_readonly e escreve só a camada do usuário com fin_mcp.
+x-user-db: &user-db
+  PGHOST: db
+  PGPORT: "5432"
+  PGDATABASE: financas
+  READ_DB_PASSWORD: ${READONLY_DB_PASSWORD:-}
+  WRITE_DB_PASSWORD: ${MCP_DB_PASSWORD:-}
+  TZ: America/Sao_Paulo
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: financas
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?defina POSTGRES_SUPERUSER_PASSWORD no .env}
+      # Lidos só pelo script de init (db/init/01-roles.sh), no primeiro start.
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+      READONLY_DB_PASSWORD: ${READONLY_DB_PASSWORD:?defina READONLY_DB_PASSWORD no .env}
+      # Papel de escrita do MCP (db/init/02-mcp-role.sh). Opcional: sem ele, o resto funciona.
+      MCP_DB_PASSWORD: ${MCP_DB_PASSWORD:-}
+      TZ: America/Sao_Paulo
+    volumes:
+      # Postgres 18+: o volume é montado em /var/lib/postgresql (não mais .../data).
+      - pgdata:/var/lib/postgresql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Só na sua máquina (para psql, DBeaver, o MCP). Nunca exponha em 0.0.0.0.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d financas"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    <<: [*sync-image, *hardening]
+    command: ["migrate"]
+    environment:
+      <<: *app-db
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  sync:
+    <<: [*sync-image, *hardening]
+    command: ["daemon"]
+    restart: unless-stopped
+    environment:
+      <<: *app-db
+      PLUGGY_CLIENT_ID: ${PLUGGY_CLIENT_ID:?defina PLUGGY_CLIENT_ID no .env}
+      PLUGGY_CLIENT_SECRET: ${PLUGGY_CLIENT_SECRET:?defina PLUGGY_CLIENT_SECRET no .env}
+      PLUGGY_ITEM_IDS: ${PLUGGY_ITEM_IDS:?defina PLUGGY_ITEM_IDS no .env}
+      SYNC_TIMES: ${SYNC_TIMES:-07:17,19:17}
+      SYNC_LOOKBACK_DAYS: ${SYNC_LOOKBACK_DAYS:-120}
+      SYNC_INITIAL_LOOKBACK_DAYS: ${SYNC_INITIAL_LOOKBACK_DAYS:-365}
+      SYNC_ON_START: ${SYNC_ON_START:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Classificação por IA depois de cada sync (desligada sem a chave). Só este serviço recebe a chave.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLASSIFY_MODEL: ${CLASSIFY_MODEL:-claude-haiku-5-5}
+      CLASSIFY_OWNER_NAME: ${CLASSIFY_OWNER_NAME:-}
+      CLASSIFY_AFTER_SYNC: ${CLASSIFY_AFTER_SYNC:-true}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Servidor MCP para o Claude Desktop / Claude Code. Não sobe com "up": o cliente abre um
+  # container por sessão e conversa pelo stdin/stdout:
+  #   docker compose --project-directory <pasta do projeto> run --rm -T mcp
+  # Lê com fin_readonly; escreve só categorias de transações e regras, com fin_mcp.
+  mcp:
+    <<: [*sync-image, *hardening]
+    command: ["mcp"]
+    profiles: ["mcp"]
+    environment:
+      <<: *user-db
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # App web (API + front) em http://127.0.0.1:${WEB_PORT}. Sem login: só na sua máquina.
+  web:
+    <<: [*sync-image, *hardening]
+    command: ["web"]
+    restart: unless-stopped
+    environment:
+      <<: *user-db
+      WEB_LISTEN_HOST: 0.0.0.0
+      WEB_LISTEN_PORT: "8080"
+      # Nomes extras para o acesso por proxy HTTPS da própria rede (tailscale serve), separados por
+      # vírgula; nesses, as escritas exigem Origin https. Vazio: só 127.0.0.1/localhost.
+      WEB_ALLOWED_HOSTS: ${WEB_ALLOWED_HOSTS:-}
+    ports:
+      # Só na sua máquina. Nunca exponha em 0.0.0.0: a API não tem login.
+      - "127.0.0.1:${WEB_PORT:-8737}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  backup:
+    build:
+      context: .
+      dockerfile: backup/Dockerfile
+    image: financas/backup:local
+    restart: unless-stopped
+    environment:
+      <<: *app-db
+      BACKUP_TIME: ${BACKUP_TIME:-03:23}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pgdata:
