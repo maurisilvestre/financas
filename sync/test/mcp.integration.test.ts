@@ -70,10 +70,10 @@ describe('MCP (integração)', { skip: process.env.TEST_PG_URL ? false : 'defina
 
   test('objetivos: criar_objetivo entra na previsão; atualizar_objetivo muda o aporte e conclui', async () => {
     const mes = (await ok('previsao')).meses[1].mes;
-    const { id } = await ok('criar_objetivo', { nome: 'Máquinas da casa', valor: 900, por_mes: 300, inicio: mes });
+    const { id } = await ok('criar_objetivo', { nome: 'Viagem de férias', valor: 900, por_mes: 300, inicio: mes });
     let p = await ok('previsao');
     assert.equal(p.meses[1].guardar, '300.00');
-    assert.equal(p.objetivos[0].nome, 'Máquinas da casa');
+    assert.equal(p.objetivos[0].nome, 'Viagem de férias');
     await ok('atualizar_objetivo', { id, por_mes: 900 });
     p = await ok('previsao');
     assert.deepEqual([p.meses[1].guardar, p.meses[2].guardar], ['900.00', '0.00']);

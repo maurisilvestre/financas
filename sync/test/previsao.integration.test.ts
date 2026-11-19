@@ -175,9 +175,9 @@ describe('previsão e simulação de compra (integração)', { skip: process.env
   });
 
   test('simulação: a compra equivale a quantos meses de aporte de cada objetivo', async () => {
-    const { json: g } = await post('/api/objetivos', { nome: 'Reforma', valor: 10000, por_mes: 1000, inicio: mon(0) });
+    const { json: g } = await post('/api/objetivos', { nome: 'Carro novo', valor: 10000, por_mes: 1000, inicio: mon(0) });
     const { json: p } = await get(`/api/previsao?valor=2500&mes=${mon(0)}&reserva=100000&margem=0`);
-    assert.deepEqual(p.compra.equivale, [{ id: g.id, nome: 'Reforma', meses: 3 }]);
+    assert.deepEqual(p.compra.equivale, [{ id: g.id, nome: 'Carro novo', meses: 3 }]);
     assert.equal((await post(`/api/objetivos/${g.id}`, { status: 'cancelado' })).status, 200);
   });
 
