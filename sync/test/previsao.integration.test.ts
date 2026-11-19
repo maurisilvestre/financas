@@ -200,6 +200,20 @@ describe('previsão e simulação de compra (integração)', { skip: process.env
     assert.equal(c.compra.mes, mon(-40));
   });
 
+  test('objetivo com aporte minúsculo não trava a previsão: os meses param no horizonte e em 100 anos', async () => {
+    // R$ 10 milhões a R$ 0,01 por mês seriam 1 bilhão de meses: sem limite, o Postgres geraria a série inteira.
+    const r = await post('/api/objetivos', { nome: 'Absurdo', valor: 10_000_000, por_mes: 0.01 });
+    assert.equal(r.status, 200);
+    try {
+      const { status, json: p } = await get('/api/previsao?meses=48');
+      assert.equal(status, 200);
+      const o = p.objetivos.find((x: any) => x.id === r.json.id);
+      assert.ok(o.fica_pronto <= `${Number(mon(0).slice(0, 4)) + 100}-12`, `fica pronto em no máximo 100 anos (veio ${o.fica_pronto})`);
+    } finally {
+      assert.equal((await post(`/api/objetivos/${r.json.id}`, { status: 'cancelado' })).status, 200);
+    }
+  });
+
   test('guardado: parte do que está nos investimentos e mostra até onde chega (fora do veredito)', async () => {
     const { json: p } = await get('/api/previsao');
     assert.equal(p.guardado.total, '1500.50', 'o CDB resgatado não conta');

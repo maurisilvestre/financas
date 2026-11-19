@@ -803,6 +803,8 @@ async function mediasDaPrevisao(read: Db, inicio: string, atual: string, fixosDe
 // vier depois (o que já foi guardado o usuário informa em saved_amount), e dura até completar o que falta.
 const OBJETIVO_INICIO = `greatest(g.start_month, date_trunc('month', $1::date)::date)`;
 const OBJETIVO_MESES = `ceil((g.target_amount - g.saved_amount) / g.monthly_amount)::int`;
+// Teto do "fica pronto": um aporte minúsculo (R$ 0,01 para milhões) daria bilhões de meses.
+const MAX_MESES_OBJETIVO = 1200;
 
 /** Parcelas (exatas, do plano de parcelas), gastos planejados e aportes dos objetivos de cada mês do horizonte. */
 async function compromissosDaPrevisao(read: Db, atual: string, meses: number) {
@@ -823,7 +825,8 @@ async function compromissosDaPrevisao(read: Db, atual: string, meses: number) {
        SELECT (${OBJETIVO_INICIO} + make_interval(months => k))::date AS mes,
               least(g.monthly_amount, g.target_amount - g.saved_amount - g.monthly_amount * k) AS valor
        FROM fin.goals g
-       CROSS JOIN LATERAL generate_series(0, ${OBJETIVO_MESES} - 1) AS k
+       -- Só até o fim do horizonte: o aporte começa neste mês ou depois, e o que passa dele não entra.
+       CROSS JOIN LATERAL generate_series(0, least(${OBJETIVO_MESES}, $2::int) - 1) AS k
        WHERE g.status = 'ativo' AND g.target_amount > g.saved_amount
      )
      SELECT to_char(m.mes, 'YYYY-MM') AS mes,
@@ -842,7 +845,7 @@ async function objetivosDaPrevisao(read: Db, atual: string) {
             greatest(g.target_amount - g.saved_amount, 0)::numeric(14,2) AS falta, g.monthly_amount AS por_mes,
             to_char(${OBJETIVO_INICIO}, 'YYYY-MM') AS inicio,
             CASE WHEN g.target_amount > g.saved_amount
-                 THEN to_char(${OBJETIVO_INICIO} + make_interval(months => ${OBJETIVO_MESES} - 1), 'YYYY-MM') END AS fica_pronto,
+                 THEN to_char(${OBJETIVO_INICIO} + make_interval(months => least(${OBJETIVO_MESES}, ${MAX_MESES_OBJETIVO}) - 1), 'YYYY-MM') END AS fica_pronto,
             g.status
      FROM fin.goals g WHERE g.status = 'ativo' ORDER BY g.created_at, g.id`, [atual]);
   return rows;
